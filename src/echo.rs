@@ -19,32 +19,37 @@ struct Message {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum MessageBody {
+enum Request {
     Init {
-        msg_id: MsgId,
         node_id: NodeId,
         node_ids: Vec<NodeId>,
     },
-    InitOk {
-        in_reply_to: MsgId,
-    },
     Echo {
-        msg_id: MsgId,
         echo: String,
     },
-    EchoOk {
+    Generate,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Response {
+    InitOk,
+    EchoOk { echo: String },
+    GenerateOk { id: u64 },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+enum MessageBody {
+    Request {
+        #[serde(flatten)]
+        request: Request,
         msg_id: MsgId,
-        in_reply_to: MsgId,
-        echo: String,
     },
-    Read {
-        msg_id: MsgId,
-        key: String,
-    },
-    ReadOk {
-        msg_id: MsgId,
+    Response {
+        #[serde(flatten)]
+        response: Response,
         in_reply_to: MsgId,
-        value: String,
     },
 }
 
@@ -62,43 +67,56 @@ fn write_message(msg: &Message) {
 
 fn init() -> NodeId {
     let msg = read_message();
-    match msg.body {
-        MessageBody::Init {
-            msg_id, node_id, ..
-        } => {
-            let response = Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: MessageBody::InitOk {
-                    in_reply_to: msg_id,
-                },
-            };
-            write_message(&response);
-            node_id
+    if let MessageBody::Request {
+        msg_id,
+        request: Request::Init { node_id, .. },
+    } = msg.body
+    {
+        let response = Message {
+            src: msg.dest,
+            dest: msg.src,
+            body: MessageBody::Response {
+                response: Response::InitOk,
+                in_reply_to: msg_id,
+            },
+        };
+        write_message(&response);
+        node_id
+    } else {
+        panic!("expected Init message");
+    }
+}
+
+impl Into<Response> for Request {
+    fn into(self) -> Response {
+        match self {
+            Request::Init { .. } => panic!("unexpected Init request"),
+            Request::Echo { echo } => Response::EchoOk { echo },
+            Request::Generate => Response::GenerateOk { id: 42 },
         }
-        _ => panic!("expected Init message"),
     }
 }
 
 fn main() {
-    let node_id = init();
+    let self_id = init();
     loop {
         let msg = read_message();
-        if msg.dest != node_id {
-            panic!("unexpected destination: {}", msg.dest);
+        if msg.dest != self_id {
+            continue;
         }
-        let response = match msg.body {
-            MessageBody::Echo { msg_id, echo } => Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: MessageBody::EchoOk {
-                    msg_id,
-                    in_reply_to: msg_id,
-                    echo,
-                },
-            },
-            _ => panic!("unexpected message type"),
-        };
-        write_message(&response);
+        match msg.body {
+            MessageBody::Request { request, msg_id } => {
+                let response = Message {
+                    src: msg.dest,
+                    dest: msg.src,
+                    body: MessageBody::Response {
+                        response: request.into(),
+                        in_reply_to: msg_id,
+                    },
+                };
+                write_message(&response);
+            }
+            MessageBody::Response { .. } => panic!("unexpected Response message"),
+        }
     }
 }
