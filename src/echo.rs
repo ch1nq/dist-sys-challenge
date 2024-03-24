@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use uuid::Uuid;
 
 type NodeId = String;
 type MsgId = usize;
+type MsgValue = isize;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Message {
@@ -28,6 +30,13 @@ enum Request {
         echo: String,
     },
     Generate,
+    Broadcast {
+        message: MsgValue,
+    },
+    Topology {
+        topology: HashMap<NodeId, HashSet<NodeId>>,
+    },
+    Read,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -36,6 +45,9 @@ enum Response {
     InitOk,
     EchoOk { echo: String },
     GenerateOk { id: Uuid },
+    TopologyOk,
+    ReadOk { messages: HashSet<MsgValue> },
+    BroadcastOk,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,59 +77,88 @@ fn write_message(msg: &Message) {
     handle.write(b"\n").expect("failed to write newline");
 }
 
-fn init() -> NodeId {
-    let msg = read_message();
-    if let MessageBody::Request {
-        msg_id,
-        request: Request::Init { node_id, .. },
-    } = msg.body
-    {
-        let response = Message {
-            src: msg.dest,
-            dest: msg.src,
-            body: MessageBody::Response {
-                response: Response::InitOk,
-                in_reply_to: msg_id,
-            },
-        };
-        write_message(&response);
-        node_id
-    } else {
-        panic!("expected Init message");
-    }
+struct Node {
+    id: NodeId,
+    cluster: HashSet<NodeId>,
+    seen: HashSet<MsgValue>,
 }
 
-impl Into<Response> for Request {
-    fn into(self) -> Response {
-        match self {
+impl Node {
+    fn init() -> Self {
+        let msg = read_message();
+        if let MessageBody::Request {
+            msg_id,
+            request: Request::Init { node_id, node_ids },
+        } = msg.body
+        {
+            let response = Message {
+                src: msg.dest,
+                dest: msg.src,
+                body: MessageBody::Response {
+                    response: Response::InitOk,
+                    in_reply_to: msg_id,
+                },
+            };
+            write_message(&response);
+            Node {
+                id: node_id,
+                cluster: node_ids.into_iter().collect(),
+                seen: HashSet::new(),
+            }
+        } else {
+            panic!("expected Init message");
+        }
+    }
+
+    fn handle_request(&mut self, request: Request) -> Option<Response> {
+        match request {
             Request::Init { .. } => panic!("unexpected Init request"),
-            Request::Echo { echo } => Response::EchoOk { echo },
-            Request::Generate => Response::GenerateOk { id: Uuid::new_v4() },
+            Request::Echo { echo } => Some(Response::EchoOk { echo }),
+            Request::Generate => Some(Response::GenerateOk { id: Uuid::new_v4() }),
+            Request::Broadcast { message } => {
+                self.seen.insert(message);
+                Some(Response::BroadcastOk)
+            }
+            Request::Read => Some(Response::ReadOk {
+                messages: self.seen.clone(),
+            }),
+            Request::Topology { topology } => {
+                self.cluster = topology
+                    .get(&self.id)
+                    .expect("node not in topology")
+                    .clone();
+                Some(Response::TopologyOk)
+            }
+        }
+    }
+
+    fn handle_messages(mut self) -> ! {
+        loop {
+            let msg = read_message();
+            if msg.dest != self.id {
+                continue;
+            }
+            match msg.body {
+                MessageBody::Request { request, msg_id } => {
+                    if let Some(response) = self.handle_request(request) {
+                        let body = MessageBody::Response {
+                            response,
+                            in_reply_to: msg_id,
+                        };
+                        let response = Message {
+                            src: msg.dest,
+                            dest: msg.src,
+                            body,
+                        };
+                        write_message(&response);
+                    }
+                }
+                MessageBody::Response { .. } => panic!("unexpected Response message"),
+            }
         }
     }
 }
 
 fn main() {
-    let self_id = init();
-    loop {
-        let msg = read_message();
-        if msg.dest != self_id {
-            continue;
-        }
-        match msg.body {
-            MessageBody::Request { request, msg_id } => {
-                let body = MessageBody::Response {
-                    response: request.into(),
-                    in_reply_to: msg_id,
-                };
-                let response = Message {
-                    src: msg.dest,
-                    dest: msg.src,
-                    body,
-                };
-                write_message(&response);
-            }
-            MessageBody::Response { .. } => panic!("unexpected Response message"),
-        }
-    }
+    Node::init().handle_messages();
 }
