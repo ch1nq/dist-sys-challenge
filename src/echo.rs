@@ -1,6 +1,6 @@
-use std::io::Write;
-
 use serde::{Deserialize, Serialize};
+use std::io::Write;
+use uuid::Uuid;
 
 type NodeId = String;
 type MsgId = usize;
@@ -35,7 +35,7 @@ enum Request {
 enum Response {
     InitOk,
     EchoOk { echo: String },
-    GenerateOk { id: u64 },
+    GenerateOk { id: Uuid },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -92,7 +92,7 @@ impl Into<Response> for Request {
         match self {
             Request::Init { .. } => panic!("unexpected Init request"),
             Request::Echo { echo } => Response::EchoOk { echo },
-            Request::Generate => Response::GenerateOk { id: 42 },
+            Request::Generate => Response::GenerateOk { id: Uuid::new_v4() },
         }
     }
 }
@@ -106,13 +106,14 @@ fn main() {
         }
         match msg.body {
             MessageBody::Request { request, msg_id } => {
+                let body = MessageBody::Response {
+                    response: request.into(),
+                    in_reply_to: msg_id,
+                };
                 let response = Message {
                     src: msg.dest,
                     dest: msg.src,
-                    body: MessageBody::Response {
-                        response: request.into(),
-                        in_reply_to: msg_id,
-                    },
+                    body,
                 };
                 write_message(&response);
             }
