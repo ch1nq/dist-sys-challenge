@@ -50,7 +50,7 @@ enum Request {
     Init { node_id: NodeId, node_ids: Vec<NodeId> },
     Echo { echo: String },
     Generate,
-    Broadcast { message: MsgValue },
+    Broadcast { value: MsgValue },
     Topology { topology: HashMap<NodeId, HashSet<NodeId>> },
     Read,
 }
@@ -62,7 +62,7 @@ enum Response {
     EchoOk { echo: String },
     GenerateOk { id: Uuid },
     TopologyOk,
-    ReadOk { messages: HashSet<MsgValue> },
+    ReadOk { values: HashSet<MsgValue> },
     BroadcastOk,
 }
 
@@ -88,7 +88,7 @@ struct Node {
     /// Local counter for the next message id to use
     last_msg_id: MsgId,
 
-    /// Neighboring nodes in the cluster (including this node) and the messages they have seen
+    /// Neighboring nodes in the cluster (including this node) and which values we know that they have seen
     cluster: HashMap<NodeId, HashSet<MsgValue>>,
 }
 
@@ -115,22 +115,22 @@ impl Node {
         }
     }
 
-    fn broadcast(&mut self, message: MsgValue) {
+    fn broadcast(&mut self, value: MsgValue) {
         let mut last_msg_id = self.last_msg_id;
-        for (dest, seen_messages) in self.cluster.iter_mut() {
-            if seen_messages.contains(&message) {
+        for (dest, seen_values) in self.cluster.iter_mut() {
+            if seen_values.contains(&value) {
                 continue;
             }
             let msg = Message {
                 src: self.id.clone(),
                 dest: dest.clone(),
                 body: MessageBody::Request {
-                    request: Request::Broadcast { message },
+                    request: Request::Broadcast { value },
                     msg_id: last_msg_id + 1,
                 },
             };
             msg.send();
-            seen_messages.insert(message);
+            // seen_messages.insert(value);
             last_msg_id += 1;
         }
         self.last_msg_id = last_msg_id;
@@ -149,19 +149,23 @@ impl Node {
                     Request::Init { .. } => panic!("unexpected Init request"),
                     Request::Echo { echo } => msg.respond_with(Response::EchoOk { echo: echo.to_string() }),
                     Request::Generate => msg.respond_with(Response::GenerateOk { id: Uuid::new_v4() }),
-                    Request::Broadcast { message } => {
+                    Request::Broadcast { value } => {
+                        // We know that we have seen this value
                         self.cluster
                             .get_mut(&self.id)
                             .expect("our own id not in cluster")
-                            .insert(*message);
+                            .insert(*value);
+
+                        // We know that the sender has seen this value
                         self.cluster
                             .get_mut(&msg.src)
-                            .map(|seen_messages| seen_messages.insert(*message));
-                        self.broadcast(*message);
+                            .map(|seen_values| seen_values.insert(*value));
+
+                        self.broadcast(*value);
                         msg.respond_with(Response::BroadcastOk);
                     }
                     Request::Read => msg.respond_with(Response::ReadOk {
-                        messages: self.cluster[&self.id].clone(),
+                        values: self.cluster[&self.id].clone(),
                     }),
                     Request::Topology { topology } => {
                         for id in topology.get(&self.id).expect("our own id not in topology") {
