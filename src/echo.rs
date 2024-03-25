@@ -19,23 +19,39 @@ struct Message {
     body: MessageBody,
 }
 
+impl Message {
+    fn send(self) {
+        let mut handle = std::io::stdout().lock();
+        serde_json::to_writer(&mut handle, &self).expect("failed to write message");
+        handle.write(b"\n").expect("failed to write newline");
+    }
+
+    fn respond_with(&self, response: Response) {
+        match &self.body {
+            MessageBody::Request { msg_id, .. } => {
+                let response_msg = Message {
+                    src: self.dest.clone(),
+                    dest: self.src.clone(),
+                    body: MessageBody::Response {
+                        in_reply_to: msg_id.clone(),
+                        response,
+                    },
+                };
+                response_msg.send();
+            }
+            _ => panic!("expected Request"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Request {
-    Init {
-        node_id: NodeId,
-        node_ids: Vec<NodeId>,
-    },
-    Echo {
-        echo: String,
-    },
+    Init { node_id: NodeId, node_ids: Vec<NodeId> },
+    Echo { echo: String },
     Generate,
-    Broadcast {
-        message: MsgValue,
-    },
-    Topology {
-        topology: HashMap<NodeId, HashSet<NodeId>>,
-    },
+    Broadcast { message: MsgValue },
+    Topology { topology: HashMap<NodeId, HashSet<NodeId>> },
     Read,
 }
 
@@ -65,100 +81,106 @@ enum MessageBody {
     },
 }
 
-fn read_message() -> Message {
-    let stdin = std::io::stdin();
-    let mut deserializer = serde_json::Deserializer::from_reader(stdin.lock());
-    Message::deserialize(&mut deserializer).expect("failed to read message")
-}
-
-fn write_message(msg: &Message) {
-    let mut handle = std::io::stdout().lock();
-    serde_json::to_writer(&mut handle, msg).expect("failed to write message");
-    handle.write(b"\n").expect("failed to write newline");
-}
-
 struct Node {
+    /// The id of this node
     id: NodeId,
-    cluster: HashSet<NodeId>,
-    seen: HashSet<MsgValue>,
+
+    /// Local counter for the next message id to use
+    last_msg_id: MsgId,
+
+    /// Neighboring nodes in the cluster (including this node) and the messages they have seen
+    cluster: HashMap<NodeId, HashSet<MsgValue>>,
 }
 
 impl Node {
     fn init() -> Self {
-        let msg = read_message();
-        if let MessageBody::Request {
-            msg_id,
-            request: Request::Init { node_id, node_ids },
-        } = msg.body
-        {
-            let response = Message {
-                src: msg.dest,
-                dest: msg.src,
-                body: MessageBody::Response {
-                    response: Response::InitOk,
-                    in_reply_to: msg_id,
+        let mut de = serde_json::Deserializer::from_reader(std::io::stdin());
+        let msg = Message::deserialize(&mut de).expect("failed to parse message");
+        match &msg.body {
+            MessageBody::Request {
+                request: Request::Init { node_id, node_ids },
+                ..
+            } => {
+                let cluster = node_ids.clone().into_iter().map(|id| (id, HashSet::new())).collect();
+                msg.respond_with(Response::InitOk);
+                Node {
+                    id: node_id.clone(),
+                    last_msg_id: 0,
+                    cluster,
+                }
+            }
+            _ => {
+                panic!("expected Init message");
+            }
+        }
+    }
+
+    fn broadcast(&mut self, message: MsgValue) {
+        let mut last_msg_id = self.last_msg_id;
+        for (dest, seen_messages) in self.cluster.iter_mut() {
+            if seen_messages.contains(&message) {
+                continue;
+            }
+            let msg = Message {
+                src: self.id.clone(),
+                dest: dest.clone(),
+                body: MessageBody::Request {
+                    request: Request::Broadcast { message },
+                    msg_id: last_msg_id + 1,
                 },
             };
-            write_message(&response);
-            Node {
-                id: node_id,
-                cluster: node_ids.into_iter().collect(),
-                seen: HashSet::new(),
-            }
-        } else {
-            panic!("expected Init message");
+            msg.send();
+            seen_messages.insert(message);
+            last_msg_id += 1;
         }
+        self.last_msg_id = last_msg_id;
     }
 
-    fn handle_request(&mut self, request: Request) -> Option<Response> {
-        match request {
-            Request::Init { .. } => panic!("unexpected Init request"),
-            Request::Echo { echo } => Some(Response::EchoOk { echo }),
-            Request::Generate => Some(Response::GenerateOk { id: Uuid::new_v4() }),
-            Request::Broadcast { message } => {
-                self.seen.insert(message);
-                Some(Response::BroadcastOk)
-            }
-            Request::Read => Some(Response::ReadOk {
-                messages: self.seen.clone(),
-            }),
-            Request::Topology { topology } => {
-                self.cluster = topology
-                    .get(&self.id)
-                    .expect("node not in topology")
-                    .clone();
-                Some(Response::TopologyOk)
-            }
-        }
-    }
-
-    fn handle_messages(mut self) -> ! {
-        loop {
-            let msg = read_message();
+    fn run(mut self) {
+        let stdin = std::io::stdin();
+        let deserializer = serde_json::Deserializer::from_reader(stdin);
+        for msg in deserializer.into_iter::<Message>() {
+            let msg = msg.expect("failed to parse message");
             if msg.dest != self.id {
                 continue;
             }
             match msg.body {
-                MessageBody::Request { request, msg_id } => {
-                    if let Some(response) = self.handle_request(request) {
-                        let body = MessageBody::Response {
-                            response,
-                            in_reply_to: msg_id,
-                        };
-                        let response = Message {
-                            src: msg.dest,
-                            dest: msg.src,
-                            body,
-                        };
-                        write_message(&response);
+                MessageBody::Request { ref request, .. } => match request {
+                    Request::Init { .. } => panic!("unexpected Init request"),
+                    Request::Echo { echo } => msg.respond_with(Response::EchoOk { echo: echo.to_string() }),
+                    Request::Generate => msg.respond_with(Response::GenerateOk { id: Uuid::new_v4() }),
+                    Request::Broadcast { message } => {
+                        self.cluster
+                            .get_mut(&self.id)
+                            .expect("our own id not in cluster")
+                            .insert(*message);
+                        self.cluster
+                            .get_mut(&msg.src)
+                            .map(|seen_messages| seen_messages.insert(*message));
+                        self.broadcast(*message);
+                        msg.respond_with(Response::BroadcastOk);
                     }
-                }
-                MessageBody::Response { .. } => panic!("unexpected Response message"),
+                    Request::Read => msg.respond_with(Response::ReadOk {
+                        messages: self.cluster[&self.id].clone(),
+                    }),
+                    Request::Topology { topology } => {
+                        for id in topology.get(&self.id).expect("our own id not in topology") {
+                            if !self.cluster.contains_key(id) {
+                                self.cluster.insert(id.clone(), HashSet::new());
+                            }
+                        }
+                        msg.respond_with(Response::TopologyOk);
+                    }
+                },
+                MessageBody::Response { response, .. } => match response {
+                    Response::BroadcastOk => {}
+                    _ => panic!("unexpected response {:?}", response),
+                },
             }
         }
     }
 }
 
 fn main() {
-    Node::init().handle_messages();
+    Node::init().run();
 }
