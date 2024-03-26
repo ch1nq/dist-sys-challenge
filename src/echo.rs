@@ -45,28 +45,6 @@ impl Message {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Request {
-    Init { node_id: NodeId, node_ids: Vec<NodeId> },
-    Echo { echo: String },
-    Generate,
-    Broadcast { value: MsgValue },
-    Topology { topology: HashMap<NodeId, HashSet<NodeId>> },
-    Read,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Response {
-    InitOk,
-    EchoOk { echo: String },
-    GenerateOk { id: Uuid },
-    TopologyOk,
-    ReadOk { values: HashSet<MsgValue> },
-    BroadcastOk,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 enum MessageBody {
     Request {
@@ -81,6 +59,45 @@ enum MessageBody {
     },
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Request {
+    Init {
+        node_id: NodeId,
+        node_ids: Vec<NodeId>,
+    },
+    Echo {
+        echo: String,
+    },
+    Generate,
+    Broadcast {
+        #[serde(rename = "message")]
+        value: MsgValue,
+    },
+    Topology {
+        topology: HashMap<NodeId, HashSet<NodeId>>,
+    },
+    Read,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Response {
+    InitOk,
+    EchoOk {
+        echo: String,
+    },
+    GenerateOk {
+        id: Uuid,
+    },
+    TopologyOk,
+    ReadOk {
+        #[serde(rename = "messages")]
+        values: HashSet<MsgValue>,
+    },
+    BroadcastOk,
+}
+
 struct Node {
     /// The id of this node
     id: NodeId,
@@ -90,48 +107,55 @@ struct Node {
 
     /// Neighboring nodes in the cluster (including this node) and which values we know that they have seen
     cluster: HashMap<NodeId, HashSet<MsgValue>>,
+
+    outbound_requests: HashMap<MsgId, Request>,
 }
 
 impl Node {
     fn init() -> Self {
         let mut de = serde_json::Deserializer::from_reader(std::io::stdin());
         let msg = Message::deserialize(&mut de).expect("failed to parse message");
-        match &msg.body {
-            MessageBody::Request {
-                request: Request::Init { node_id, node_ids },
-                ..
-            } => {
-                let cluster = node_ids.clone().into_iter().map(|id| (id, HashSet::new())).collect();
-                msg.respond_with(Response::InitOk);
-                Node {
-                    id: node_id.clone(),
-                    last_msg_id: 0,
-                    cluster,
-                }
-            }
-            _ => {
-                panic!("expected Init message");
-            }
+
+        let MessageBody::Request {
+            request: Request::Init { node_id, node_ids },
+            ..
+        } = &msg.body
+        else {
+            panic!("expected Init message");
+        };
+
+        let cluster = node_ids.clone().into_iter().map(|id| (id, HashSet::new())).collect();
+        msg.respond_with(Response::InitOk);
+        Node {
+            id: node_id.clone(),
+            last_msg_id: 0,
+            cluster,
+            outbound_requests: HashMap::new(),
         }
     }
 
-    fn broadcast(&mut self, value: MsgValue) {
+    fn broadcast(&mut self) {
         let mut last_msg_id = self.last_msg_id;
+        let all_values = self.cluster[&self.id].iter().cloned().collect::<HashSet<_>>();
         for (dest, seen_values) in self.cluster.iter_mut() {
-            if seen_values.contains(&value) {
-                continue;
+            let unseen_values = all_values.difference(seen_values);
+
+            for value in unseen_values {
+                let msg_id = last_msg_id + 1;
+                last_msg_id += 1;
+
+                let request = Request::Broadcast { value: *value };
+                let msg = Message {
+                    src: self.id.clone(),
+                    dest: dest.clone(),
+                    body: MessageBody::Request {
+                        request: request.clone(),
+                        msg_id: last_msg_id + 1,
+                    },
+                };
+                self.outbound_requests.insert(msg_id, request);
+                msg.send();
             }
-            let msg = Message {
-                src: self.id.clone(),
-                dest: dest.clone(),
-                body: MessageBody::Request {
-                    request: Request::Broadcast { value },
-                    msg_id: last_msg_id + 1,
-                },
-            };
-            msg.send();
-            // seen_messages.insert(value);
-            last_msg_id += 1;
         }
         self.last_msg_id = last_msg_id;
     }
@@ -153,7 +177,7 @@ impl Node {
                         // We know that we have seen this value
                         self.cluster
                             .get_mut(&self.id)
-                            .expect("our own id not in cluster")
+                            .expect("own id is in cluster")
                             .insert(*value);
 
                         // We know that the sender has seen this value
@@ -161,14 +185,14 @@ impl Node {
                             .get_mut(&msg.src)
                             .map(|seen_values| seen_values.insert(*value));
 
-                        self.broadcast(*value);
                         msg.respond_with(Response::BroadcastOk);
+                        self.broadcast();
                     }
                     Request::Read => msg.respond_with(Response::ReadOk {
                         values: self.cluster[&self.id].clone(),
                     }),
                     Request::Topology { topology } => {
-                        for id in topology.get(&self.id).expect("our own id not in topology") {
+                        for id in topology.get(&self.id).expect("our own id is in topology") {
                             if !self.cluster.contains_key(id) {
                                 self.cluster.insert(id.clone(), HashSet::new());
                             }
@@ -176,8 +200,20 @@ impl Node {
                         msg.respond_with(Response::TopologyOk);
                     }
                 },
-                MessageBody::Response { response, .. } => match response {
-                    Response::BroadcastOk => {}
+                MessageBody::Response { response, in_reply_to } => match response {
+                    Response::BroadcastOk => {
+                        match self.outbound_requests.remove(&in_reply_to) {
+                            Some(Request::Broadcast { value }) => {
+                                // We know that the destination has seen this value if they replied with BroadcastOk
+                                self.cluster
+                                    .get_mut(&msg.src)
+                                    .expect("destination id in cluster")
+                                    .insert(value);
+                            }
+                            Some(req) => panic!("unexpected request {:?}", req),
+                            None => {}
+                        }
+                    }
                     _ => panic!("unexpected response {:?}", response),
                 },
             }
