@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::node::NodeId;
-use crate::workloads::workload::Workload;
+use crate::workloads::workload::{self, Workload};
 use crate::{message, node};
 
 pub struct GenerateWorkload;
@@ -32,8 +32,8 @@ impl Workload for GenerateWorkload {
         _request: &Self::Request,
         _msg_id: message::MsgId,
         _src: &node::NodeId,
-    ) -> Self::Response {
-        Response::GenerateOk { id: Uuid::new_v4() }
+    ) -> impl IntoIterator<Item = workload::Body<Self>> {
+        vec![workload::Body::Response(Response::GenerateOk { id: Uuid::new_v4() })]
     }
 
     fn handle_response(&mut self, _response: &Self::Response, _in_reply_to: message::MsgId, _src: &node::NodeId) {}

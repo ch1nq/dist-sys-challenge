@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{message::MsgId, node::NodeId, workloads::workload::Workload};
+use crate::{message::MsgId, node::NodeId, workloads::workload};
 
 pub struct EchoWorkload;
 
@@ -15,7 +15,7 @@ pub struct EchoOk {
     echo: String,
 }
 
-impl Workload for EchoWorkload {
+impl workload::Workload for EchoWorkload {
     type Request = Echo;
     type Response = EchoOk;
 
@@ -23,10 +23,15 @@ impl Workload for EchoWorkload {
         EchoWorkload
     }
 
-    fn handle_request(&mut self, request: &Self::Request, _msg_id: MsgId, _src: &NodeId) -> Self::Response {
-        EchoOk {
+    fn handle_request(
+        &mut self,
+        request: &Self::Request,
+        _msg_id: MsgId,
+        _src: &NodeId,
+    ) -> impl IntoIterator<Item = workload::Body<Self>> {
+        vec![workload::Body::Response(EchoOk {
             echo: request.echo.clone(),
-        }
+        })]
     }
 
     fn handle_response(&mut self, _response: &EchoOk, _in_reply_to: MsgId, _src: &NodeId) {}

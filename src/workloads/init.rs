@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{message::MsgId, node::NodeId, workloads::workload::Workload};
 
+use super::workload;
+
 pub struct InitWorkload;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -26,8 +28,13 @@ impl Workload for InitWorkload {
         InitWorkload
     }
 
-    fn handle_request(&mut self, _request: &Self::Request, _msg_id: MsgId, _src: &NodeId) -> Self::Response {
-        Response::InitOk
+    fn handle_request(
+        &mut self,
+        _request: &Self::Request,
+        _msg_id: MsgId,
+        _src: &NodeId,
+    ) -> impl IntoIterator<Item = workload::Body<Self>> {
+        vec![workload::Body::Response(Response::InitOk)]
     }
 
     fn handle_response(&mut self, _response: &Self::Response, _in_reply_to: MsgId, _src: &NodeId) {
