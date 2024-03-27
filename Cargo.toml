@@ -10,15 +10,3 @@ rand = "0.8.5"
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.114"
 uuid = { version = "1.8.0", features = ["fast-rng", "v4", "serde"] }
-
-[[bin]]
-name = "echo"
-path = "src/echo.rs"
-
-[[bin]]
-name = "unique-ids"
-path = "src/echo.rs"
-
-[[bin]]
-name = "broadcast"
-path = "src/echo.rs"
