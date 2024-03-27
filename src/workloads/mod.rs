@@ -3,4 +3,4 @@ pub mod echo;
 pub mod generate;
 pub mod init;
 pub mod multi;
-pub mod protocol;
+pub mod workload;

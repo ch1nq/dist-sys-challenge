@@ -1,5 +1,5 @@
-use dist_sys_challenge::{node, protocols::echo};
+use dist_sys_challenge::{node, workloads::echo};
 
 fn main() {
-    node::Node::<echo::EchoProtocol>::init().run();
+    node::Node::<echo::EchoWorkload>::init().run();
 }

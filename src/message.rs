@@ -2,13 +2,12 @@ use std::io::Write;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{node::NodeId, protocols::protocol::NodeProtocol};
+use crate::{node::NodeId, workloads::workload::Workload};
 
 pub type MsgId = usize;
-pub type MsgValue = isize;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct Message<P: NodeProtocol> {
+pub(crate) struct Message<P: Workload> {
     /// A string identifying the node this message came from
     pub src: NodeId,
 
@@ -34,7 +33,7 @@ pub enum MessageBody<Request, Response> {
     },
 }
 
-impl<S: NodeProtocol> Message<S> {
+impl<S: Workload> Message<S> {
     pub fn send(self) {
         let mut handle = std::io::stdout().lock();
         serde_json::to_writer(&mut handle, &self).expect("failed to write message");

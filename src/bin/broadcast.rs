@@ -1,8 +1,5 @@
-use dist_sys_challenge::{node, protocols::*};
-
-// TODO: Generate using a macro
-type P = multi::MultiProtocol<init::InitProtocol, broadcast::BroadcastProtocol>;
+use dist_sys_challenge::{node, workloads::broadcast};
 
 fn main() {
-    node::Node::<P>::init().run();
+    node::Node::<broadcast::BroadcastWorkload>::init().run();
 }
