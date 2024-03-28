@@ -1,9 +1,10 @@
-use std::io::Write;
-
 use serde::Deserialize;
+use std::io::Write;
+use std::sync::mpsc;
+use std::thread;
 
 use crate::{
-    message::{Message, MessageBody, MsgId},
+    message::{Message, MessageBody},
     workloads::{
         init,
         workload::{Body, Workload},
@@ -17,80 +18,73 @@ pub struct Node<W: Workload> {
     /// The id of this node
     pub id: NodeId,
 
-    /// Local counter for the next message id to use
-    pub next_msg_id: MsgId,
-
-    protocol: W,
+    /// The workload this node is running
+    workload: W,
 }
 
-impl<W: Workload> Node<W> {
-    fn request<T: Workload>(&mut self, dest: NodeId, request: T::Request) {
-        let msg_id = self.next_msg_id;
-        self.send::<T>(dest, MessageBody::Request { msg_id, request });
-        self.next_msg_id += 1;
-    }
+fn send<T: Workload>(message: Message<T>) {
+    let mut stdout = std::io::stdout().lock();
+    serde_json::to_writer(&mut stdout, &message).expect("write message");
+    stdout.write_all(b"\n").expect("write newline");
+}
 
-    fn send<T: Workload>(&mut self, dest: NodeId, body: MessageBody<T::Request, T::Response>) {
-        let msg = Message::<T> {
-            src: self.id.clone(),
-            dest,
-            body,
+fn sender_thread<W: Workload + Send + 'static>(node_id: NodeId, outbox_recv: mpsc::Receiver<Body<W>>) {
+    let mut next_msg_id = 0;
+    for body in outbox_recv.into_iter() {
+        match body {
+            Body::Request { dest, request } => {
+                let msg_id = next_msg_id;
+                next_msg_id += 1;
+                let msg = Message::<W> {
+                    src: node_id.clone(),
+                    dest,
+                    body: MessageBody::Request { msg_id, request },
+                };
+                send::<W>(msg);
+            }
+            Body::Response {
+                dest,
+                in_reply_to,
+                response,
+            } => {
+                let msg = Message::<W> {
+                    src: node_id.clone(),
+                    dest,
+                    body: MessageBody::Response { in_reply_to, response },
+                };
+                send::<W>(msg);
+            }
         };
-        let mut stdout = std::io::stdout().lock();
-        serde_json::to_writer(&mut stdout, &msg).expect("write message");
-        stdout.write_all(b"\n").expect("write newline");
-    }
-
-    fn repond_to<T: Workload>(&mut self, msg: &Message<T>, response: T::Response) {
-        let MessageBody::Request { msg_id, .. } = msg.body else {
-            panic!("expected Request")
-        };
-        let in_reply_to = msg_id.clone();
-        self.send::<T>(msg.src.clone(), MessageBody::Response { in_reply_to, response });
     }
 }
 
-impl<W: Workload> Node<W> {
+impl<W: Workload + Send + 'static> Node<W> {
     pub fn init() -> Self {
+        let (outbox_send, outbox_recv) = mpsc::channel();
+
         let mut de = serde_json::Deserializer::from_reader(std::io::stdin().lock());
         let msg = Message::<init::InitWorkload>::deserialize(&mut de).expect("a valid message");
 
-        let MessageBody::Request { ref request, .. } = msg.body else {
+        let MessageBody::Request { ref request, msg_id } = msg.body else {
             panic!("expected Request")
         };
 
-        let mut node = Node {
-            id: request.node_id.clone(),
-            next_msg_id: 0,
-            protocol: W::new(&request.node_id),
+        let node_id = request.node_id.clone();
+        thread::spawn(move || sender_thread(node_id.clone(), outbox_recv));
+
+        let init_response = Message::<init::InitWorkload> {
+            src: request.node_id.clone(),
+            dest: msg.src.clone(),
+            body: MessageBody::Response {
+                in_reply_to: msg_id,
+                response: init::Response::InitOk,
+            },
         };
+        send(init_response);
 
-        node.repond_to(&msg, init::Response::InitOk);
-        node
-    }
-
-    fn handle_message(&mut self, message: Message<W>) {
-        match message.body {
-            MessageBody::Request { ref request, msg_id } => {
-                let requests = self
-                    .protocol
-                    .handle_request(&request, msg_id, &message.src)
-                    .into_iter()
-                    .collect::<Vec<_>>();
-                for request in requests {
-                    match request {
-                        Body::Request(node_id, request) => {
-                            self.request::<W>(node_id, request);
-                        }
-                        Body::Response(response) => {
-                            self.repond_to(&message, response);
-                        }
-                    }
-                }
-            }
-            MessageBody::Response { response, in_reply_to } => {
-                self.protocol.handle_response(&response, in_reply_to, &message.src);
-            }
+        Node {
+            id: request.node_id.clone(),
+            workload: W::new(&request.node_id, outbox_send),
         }
     }
 
@@ -98,8 +92,21 @@ impl<W: Workload> Node<W> {
         let deserializer = serde_json::Deserializer::from_reader(std::io::stdin());
         for msg in deserializer.into_iter::<Message<W>>() {
             let msg = msg.expect("a valid message");
-            if msg.dest == self.id {
-                self.handle_message(msg);
+            if msg.dest != self.id {
+                continue;
+            };
+            match msg.body {
+                MessageBody::Request { ref request, msg_id } => {
+                    let response_factory = |response| Body::Response {
+                        dest: msg.src.clone(),
+                        in_reply_to: msg_id,
+                        response,
+                    };
+                    self.workload.handle_request(request, &msg.src, response_factory);
+                }
+                MessageBody::Response { response, in_reply_to } => {
+                    self.workload.handle_response(&response, in_reply_to, &msg.src)
+                }
             }
         }
     }

@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::workloads::workload::Workload;
 use crate::{message, node::NodeId};
 use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::Sender;
 
-use super::workload;
+use super::workload::Body;
 
 type MsgValue = isize;
 
@@ -38,9 +39,10 @@ pub enum Response {
 }
 
 pub struct BroadcastWorkload {
+    id: NodeId,
+    tx: Sender<Body<Self>>,
     outbound_requests: HashMap<message::MsgId, OutboundRequest>,
     seen_values: HashMap<NodeId, HashSet<MsgValue>>,
-    id: NodeId,
 }
 
 #[derive(Debug)]
@@ -53,25 +55,28 @@ impl Workload for BroadcastWorkload {
     type Request = Request;
     type Response = Response;
 
-    fn new(id: &NodeId) -> Self {
+    fn new(id: &NodeId, tx: Sender<Body<Self>>) -> Self {
         BroadcastWorkload {
+            id: id.clone(),
+            tx,
             outbound_requests: HashMap::new(),
             seen_values: HashMap::from([(id.clone(), HashSet::new())]),
-            id: id.clone(),
         }
     }
 
     fn handle_request(
         &mut self,
-        request: &Request,
-        _msg_id: message::MsgId,
+        request: &Self::Request,
         src: &NodeId,
-    ) -> impl IntoIterator<Item = workload::Body<Self>> {
+        reponse_factory: impl FnOnce(Self::Response) -> Body<Self>,
+    ) {
         match request {
             Request::Topology { topology } => {
                 self.seen_values
                     .extend(topology[&self.id].iter().cloned().map(|id| (id, HashSet::new())));
-                vec![workload::Body::Response(Response::TopologyOk)]
+                self.tx
+                    .send(reponse_factory(Response::TopologyOk))
+                    .expect("send failed");
             }
             Request::Broadcast { value } => {
                 // We have now seen this value
@@ -85,18 +90,24 @@ impl Workload for BroadcastWorkload {
                     .get_mut(src)
                     .map(|seen_values| seen_values.insert(*value));
 
-                vec![workload::Body::Response(Response::BroadcastOk)]
+                self.tx
+                    .send(reponse_factory(Response::BroadcastOk))
+                    .expect("send failed");
             }
-            Request::Read => vec![workload::Body::Response(Response::ReadOk {
-                values: self.seen_values[&self.id].clone(),
-            })],
+            Request::Read => {
+                self.tx
+                    .send(reponse_factory(Response::ReadOk {
+                        values: self.seen_values[&self.id].clone(),
+                    }))
+                    .expect("send failed");
+            }
             Request::Gossip { values } => {
                 self.seen_values
                     .get_mut(&self.id)
                     .expect("own id should be in seen_values")
                     .extend(values.into_iter());
 
-                vec![workload::Body::Response(Response::GossipOk)]
+                self.tx.send(reponse_factory(Response::GossipOk)).expect("send failed");
             }
         }
     }

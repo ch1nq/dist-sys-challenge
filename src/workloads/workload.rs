@@ -1,23 +1,31 @@
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{message::MsgId, node::NodeId};
+use std::sync::mpsc::Sender;
 
 pub enum Body<W: Workload + ?Sized> {
-    Request(NodeId, W::Request),
-    Response(W::Response),
+    Request {
+        dest: NodeId,
+        request: W::Request,
+    },
+    Response {
+        dest: NodeId,
+        in_reply_to: MsgId,
+        response: W::Response,
+    },
 }
 
 pub trait Workload {
-    type Request: DeserializeOwned + Serialize + Clone + std::fmt::Debug;
-    type Response: DeserializeOwned + Serialize + Clone + std::fmt::Debug;
+    type Request: DeserializeOwned + Serialize + Clone + std::fmt::Debug + Send;
+    type Response: DeserializeOwned + Serialize + Clone + std::fmt::Debug + Send;
 
-    fn new(id: &NodeId) -> Self;
+    fn new(id: &NodeId, tx: Sender<Body<Self>>) -> Self;
 
     fn handle_request(
         &mut self,
         request: &Self::Request,
-        msg_id: MsgId,
         src: &NodeId,
-    ) -> impl IntoIterator<Item = Body<Self>>;
+        reponse_factory: impl FnOnce(Self::Response) -> Body<Self>,
+    );
     fn handle_response(&mut self, response: &Self::Response, in_reply_to: MsgId, src: &NodeId);
 }
