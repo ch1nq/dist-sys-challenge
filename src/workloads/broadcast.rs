@@ -88,7 +88,7 @@ impl Workload for BroadcastWorkload {
         thread::spawn(move || {
             let mut rng = rand::thread_rng();
             loop {
-                thread::sleep(std::time::Duration::from_millis(100));
+                thread::sleep(std::time::Duration::from_millis(500));
                 state_gossip.lock().unwrap().gossip(&mut rng);
             }
         });
