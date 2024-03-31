@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::mpsc::Sender;
 
 use serde::{Deserialize, Serialize};
@@ -29,7 +30,7 @@ impl Workload for GenerateWorkload {
     type Request = Request;
     type Response = Response;
 
-    fn new(_id: &NodeId, tx: Sender<Body<Self>>) -> Self {
+    fn new(_id: NodeId, _all_nodes: HashSet<NodeId>, tx: Sender<Body<Self>>) -> Self {
         GenerateWorkload { tx }
     }
 

@@ -1,4 +1,4 @@
-use std::sync::mpsc::Sender;
+use std::{collections::HashSet, sync::mpsc::Sender};
 
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +25,7 @@ impl workload::Workload for EchoWorkload {
     type Request = Echo;
     type Response = EchoOk;
 
-    fn new(_id: &NodeId, tx: Sender<Body<Self>>) -> Self {
+    fn new(_id: NodeId, _all_nodes: HashSet<NodeId>, tx: Sender<Body<Self>>) -> Self {
         EchoWorkload { tx }
     }
 

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::mpsc::{channel, Sender};
 use std::thread;
 
@@ -25,7 +26,7 @@ impl<P1: Workload + 'static, P2: Workload + 'static> Workload for MultiWorkload<
     type Request = Either<P1::Request, P2::Request>;
     type Response = Either<P1::Response, P2::Response>;
 
-    fn new(id: &NodeId, tx: Sender<Body<Self>>) -> Self {
+    fn new(id: NodeId, all_nodes: HashSet<NodeId>, tx: Sender<Body<Self>>) -> Self {
         let (send_a, recv_a) = channel();
         let tx_a = tx.clone();
         thread::spawn(move || {
@@ -73,8 +74,8 @@ impl<P1: Workload + 'static, P2: Workload + 'static> Workload for MultiWorkload<
         });
 
         MultiWorkload {
-            workload_1: P1::new(id, send_a),
-            workload_2: P2::new(id, send_b),
+            workload_1: P1::new(id.clone(), all_nodes.clone(), send_a),
+            workload_2: P2::new(id, all_nodes, send_b),
         }
     }
 

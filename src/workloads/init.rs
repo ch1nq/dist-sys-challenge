@@ -26,7 +26,7 @@ impl Workload for InitWorkload {
     type Request = Init;
     type Response = Response;
 
-    fn new(_id: &NodeId, tx: Sender<Body<Self>>) -> Self {
+    fn new(_id: NodeId, _all_nodes: HashSet<NodeId>, tx: Sender<Body<Self>>) -> Self {
         InitWorkload { tx }
     }
 

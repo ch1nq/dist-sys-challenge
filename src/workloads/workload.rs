@@ -1,7 +1,7 @@
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{message::MsgId, node::NodeId};
-use std::sync::mpsc::Sender;
+use std::{collections::HashSet, sync::mpsc::Sender};
 
 pub enum Body<W: Workload + ?Sized> {
     Request {
@@ -19,7 +19,7 @@ pub trait Workload {
     type Request: DeserializeOwned + Serialize + Clone + std::fmt::Debug + Send;
     type Response: DeserializeOwned + Serialize + Clone + std::fmt::Debug + Send;
 
-    fn new(id: &NodeId, tx: Sender<Body<Self>>) -> Self;
+    fn new(id: NodeId, all_nodes: HashSet<NodeId>, tx: Sender<Body<Self>>) -> Self;
 
     fn handle_request(
         &mut self,

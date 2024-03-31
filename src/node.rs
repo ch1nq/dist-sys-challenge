@@ -84,7 +84,7 @@ impl<W: Workload + Send + 'static> Node<W> {
 
         Node {
             id: request.node_id.clone(),
-            workload: W::new(&request.node_id, outbox_send),
+            workload: W::new(request.node_id.clone(), request.node_ids.clone(), outbox_send),
         }
     }
 

@@ -75,13 +75,13 @@ impl Workload for BroadcastWorkload {
     type Request = Request;
     type Response = Response;
 
-    fn new(id: &NodeId, tx: Sender<Body<Self>>) -> Self {
+    fn new(id: NodeId, all_nodes: HashSet<NodeId>, tx: Sender<Body<Self>>) -> Self {
         let state = Arc::new(Mutex::new(BroadcastState {
             tx,
+            all_nodes,
             seen_values: Default::default(),
             to_broadcast: Default::default(),
             neighbors: Default::default(),
-            all_nodes: Default::default(),
         }));
 
         let state_gossip = state.clone();
@@ -93,7 +93,7 @@ impl Workload for BroadcastWorkload {
             }
         });
 
-        BroadcastWorkload { id: id.clone(), state }
+        BroadcastWorkload { id, state }
     }
 
     fn handle_request(
