@@ -6,8 +6,6 @@ use crate::{message, node::NodeId};
 use rand::{self, thread_rng};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
-use std::thread;
 
 use super::workload::Body;
 
